@@ -275,3 +275,93 @@
     )
   )
 )
+
+;; ADVERSARIAL DISPUTE RESOLUTION SYSTEM
+
+;; Initiates unilateral channel closure with time-locked dispute window
+;; Enables force-closure when cooperation fails, with built-in fraud protection
+(define-public (initiate-unilateral-close
+    (channel-id (buff 32))
+    (participant-b principal)
+    (proposed-balance-a uint)
+    (proposed-balance-b uint)
+    (signature (buff 65))
+  )
+  (let (
+      (channel (unwrap!
+        (map-get? payment-channels {
+          channel-id: channel-id,
+          participant-a: tx-sender,
+          participant-b: participant-b,
+        })
+        ERR-CHANNEL-NOT-FOUND
+      ))
+      (total-channel-funds (get total-deposited channel))
+    )
+    
+    ;; Security validation layer
+    (asserts! (is-valid-channel-id channel-id) ERR-INVALID-INPUT)
+    (asserts! (is-valid-signature signature) ERR-INVALID-INPUT)
+    (asserts! (not (is-eq tx-sender participant-b)) ERR-INVALID-INPUT)
+    (asserts! (get is-open channel) ERR-CHANNEL-CLOSED)
+    
+    ;; Validate proposed balances before using them
+    (asserts! (are-valid-balances proposed-balance-a proposed-balance-b total-channel-funds) ERR-INSUFFICIENT-FUNDS)
+    
+    ;; Construct message with validated inputs
+    (let ((message (unwrap! (construct-balance-message channel-id proposed-balance-a proposed-balance-b) ERR-INVALID-INPUT)))
+      
+      ;; Verify initiator's cryptographic commitment
+      (asserts! (verify-signature message signature tx-sender) ERR-INVALID-SIGNATURE)
+      
+      ;; Set dispute resolution timeline (1008 blocks = 1 week)
+      (map-set payment-channels {
+        channel-id: channel-id,
+        participant-a: tx-sender,
+        participant-b: participant-b,
+      }
+        (merge channel {
+          dispute-deadline: (+ stacks-block-height u1008),
+          balance-a: proposed-balance-a,
+          balance-b: proposed-balance-b,
+        })
+      )
+      (ok true)
+    )
+  )
+)
+
+;; Finalizes unilateral closure after dispute window expires
+;; Executes time-locked settlement ensuring all parties had opportunity to contest
+(define-public (resolve-unilateral-close
+    (channel-id (buff 32))
+    (participant-b principal)
+  )
+  (let (
+      (channel (unwrap!
+        (map-get? payment-channels {
+          channel-id: channel-id,
+          participant-a: tx-sender,
+          participant-b: participant-b,
+        })
+        ERR-CHANNEL-NOT-FOUND
+      ))
+      (proposed-balance-a (get balance-a channel))
+      (proposed-balance-b (get balance-b channel))
+    )
+    
+    ;; Validate closure prerequisites
+    (asserts! (is-valid-channel-id channel-id) ERR-INVALID-INPUT)
+    (asserts! (not (is-eq tx-sender participant-b)) ERR-INVALID-INPUT)
+    (asserts! (>= stacks-block-height (get dispute-deadline channel)) ERR-DISPUTE-PERIOD)
+    
+    ;; Additional validation of stored balances before transfer
+    (asserts! (is-valid-balance proposed-balance-a) ERR-INVALID-INPUT)
+    (asserts! (is-valid-balance proposed-balance-b) ERR-INVALID-INPUT)
+    
+    ;; Execute final fund distribution
+    (try! (as-contract (stx-transfer? proposed-balance-a tx-sender tx-sender)))
+    (try! (as-contract (stx-transfer? proposed-balance-b tx-sender participant-b)))
+    
+    ;; Archive closed channel state
+    (map-set payment-channels {
