@@ -89,3 +89,92 @@
   ;; This provides a consistent 32-byte representation for any uint
   (sha256 n)
 )
+
+;; Enhanced message construction with validation
+(define-private (construct-balance-message 
+    (channel-id (buff 32)) 
+    (balance-a uint) 
+    (balance-b uint)
+  )
+  (begin
+    ;; Validate inputs before message construction
+    (asserts! (is-valid-channel-id channel-id) ERR-INVALID-INPUT)
+    (asserts! (is-valid-balance balance-a) ERR-INVALID-INPUT)
+    (asserts! (is-valid-balance balance-b) ERR-INVALID-INPUT)
+    
+    ;; Construct message with validated inputs
+    (ok (concat 
+      (concat channel-id (uint-to-buff balance-a))
+      (uint-to-buff balance-b)
+    ))
+  )
+)
+
+(define-private (verify-signature
+    (message (buff 256))
+    (signature (buff 65))
+    (signer principal)
+  )
+  ;; Simplified signature verification - in production, use proper ECDSA verification
+  ;; This is a placeholder that checks if the caller matches the expected signer
+  (is-eq tx-sender signer)
+)
+
+;; CHANNEL LIFECYCLE MANAGEMENT
+
+;; Creates a new bidirectional payment channel between two participants
+;; Establishes the initial funding and security parameters for off-chain transactions
+(define-public (create-channel
+    (channel-id (buff 32))
+    (participant-b principal)
+    (initial-deposit uint)
+  )
+  (begin
+    ;; Input validation layer
+    (asserts! (is-valid-channel-id channel-id) ERR-INVALID-INPUT)
+    (asserts! (is-valid-deposit initial-deposit) ERR-INVALID-INPUT)
+    (asserts! (not (is-eq tx-sender participant-b)) ERR-INVALID-INPUT)
+    
+    ;; Ensure channel uniqueness
+    (asserts!
+      (is-none (map-get? payment-channels {
+        channel-id: channel-id,
+        participant-a: tx-sender,
+        participant-b: participant-b,
+      }))
+      ERR-CHANNEL-EXISTS
+    )
+    
+    ;; Lock initial funds in contract escrow
+    (try! (stx-transfer? initial-deposit tx-sender (as-contract tx-sender)))
+    
+    ;; Initialize channel state
+    (map-set payment-channels {
+      channel-id: channel-id,
+      participant-a: tx-sender,
+      participant-b: participant-b,
+    } {
+      total-deposited: initial-deposit,
+      balance-a: initial-deposit,
+      balance-b: u0,
+      is-open: true,
+      dispute-deadline: u0,
+      nonce: u0,
+    })
+    (ok true)
+  )
+)
+
+;; Injects additional liquidity into an existing payment channel
+;; Enables dynamic channel capacity scaling for increased transaction volume
+(define-public (fund-channel
+    (channel-id (buff 32))
+    (participant-b principal)
+    (additional-funds uint)
+  )
+  (let ((channel (unwrap!
+      (map-get? payment-channels {
+        channel-id: channel-id,
+        participant-a: tx-sender,
+        participant-b: participant-b,
+      })
