@@ -365,3 +365,47 @@
     
     ;; Archive closed channel state
     (map-set payment-channels {
+        channel-id: channel-id,
+      participant-a: tx-sender,
+      participant-b: participant-b,
+    }
+      (merge channel {
+        is-open: false,
+        balance-a: u0,
+        balance-b: u0,
+        total-deposited: u0,
+      })
+    )
+    (ok true)
+  )
+)
+
+;; PUBLIC QUERY INTERFACE
+
+;; Retrieves complete channel state information for external systems
+;; Provides transparency into channel status, balances, and security parameters
+(define-read-only (get-channel-info
+    (channel-id (buff 32))
+    (participant-a principal)
+    (participant-b principal)
+  )
+  (map-get? payment-channels {
+    channel-id: channel-id,
+    participant-a: participant-a,
+    participant-b: participant-b,
+  })
+)
+
+;; EMERGENCY PROTOCOL SAFEGUARDS
+
+;; Critical safety mechanism for exceptional circumstances
+;; Allows contract owner to recover funds in case of catastrophic system failure
+(define-public (emergency-withdraw)
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+    (try! (stx-transfer? (stx-get-balance (as-contract tx-sender))
+      (as-contract tx-sender) CONTRACT-OWNER
+    ))
+    (ok true)
+  )
+)
